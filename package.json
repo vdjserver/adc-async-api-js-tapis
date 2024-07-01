@@ -1,0 +1,36 @@
+{
+  "name": "adc-async-api-js-tapis",
+  "version": "1.0.0",
+  "private": true,
+  "description": "VDJServer ADC Async API",
+  "keywords": [],
+  "author": "UT Southwestern Medical Center",
+  "license": "GNU AGPL V3",
+  "homepage": "https://vdjserver.org",
+  "main": "app/app.js",
+  "dependencies": {
+    "@apidevtools/json-schema-ref-parser": "8.0.0",
+    "airr-js": "file:vdjserver-schema/airr-standards/lang/js",
+    "body-parser": "1.10.2",
+    "bull": "^3.20.0",
+    "csv-parser": "^2.3.2",
+    "express": "^4.12.3",
+    "express-openapi": "^6.0.0",
+    "js-yaml": "^3.10.0",
+    "json-approver": "1.0.3",
+    "moment-timezone": ">=0.5.35",
+    "vdj-tapis-js": "file:vdj-tapis-js",
+    "vdjserver-schema": "file:vdjserver-schema",
+    "underscore": ">=1.12.1"
+  },
+  "devDependencies": {
+    "eslint": "^7.9.0",
+    "should": "^7.1.0",
+    "supertest": "^1.0.0"
+  },
+  "scripts": {
+    "eslint": "eslint",
+    "start": "node app.js",
+    "test": "swagger project test"
+  }
+}

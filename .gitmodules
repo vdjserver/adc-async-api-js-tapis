@@ -1,0 +1,6 @@
+[submodule "vdjserver-schema"]
+	path = vdjserver-schema
+	url = https://github.com/vdjserver/vdjserver-schema.git
+[submodule "vdj-tapis-js"]
+	path = vdj-tapis-js
+	url = https://github.com/vdjserver/vdj-tapis-js.git
