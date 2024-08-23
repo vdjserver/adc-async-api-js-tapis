@@ -380,7 +380,6 @@ queryQueue.process(async (job) => {
 
     var context = 'AsyncQueue.queryQueue.process';
     var msg = null;
-    var triggers, jobs;
 
     config.log.info(context, 'start');
 
@@ -406,10 +405,10 @@ queryQueue.process(async (job) => {
             outname = metadata["uuid"] + '.airr.tsv';
         else
             outname = metadata["uuid"] + '.airr.tsv';
-        var filename = config.lrqdata_path + outname;
+        var filename = config.lrqdata_local_path + outname;
 
         // perform query
-        await mongoIO.performAsyncQueryToFile(metadata, filename)
+        var result = await mongoIO.performAsyncQueryToFile(metadata, filename)
             .catch(function(error) {
                 msg = 'mongoIO.performAsyncQueryToFile, error: ' + error;
             });
@@ -420,7 +419,7 @@ queryQueue.process(async (job) => {
         }
 
         // generate postit
-        let fileobj = { path: filename, allowedUses: 2000000000, validSeconds: 2000000000 };
+        let fileobj = { path: '/' + config.lrqdata_path + outname, allowedUses: 2000000000, validSeconds: 2000000000 };
         var postit = await tapisIO.createAsyncQueryPostit(fileobj)
             .catch(function(error) {
                 msg = 'tapisIO.createAsyncQueryPostit, error: ' + error;
@@ -433,11 +432,11 @@ queryQueue.process(async (job) => {
         console.log(postit);
 
         // update metadata
-/*        metadata['value']['status'] = 'FINISHED';
-        metadata['value']['postid_id'] = postit['uuid'];
-        metadata['value']['final_file'] = postit['outname'];
-        metadata['value']['download_url'] = postit['outname'];
-        metadata['value']['estimated_count'] = result[0]['total_records'];
+        metadata['value']['status'] = 'FINISHED';
+        metadata['value']['postid_id'] = postit['id'];
+        metadata['value']['final_file'] = outname;
+        metadata['value']['download_url'] = postit['redeemUrl'];
+        metadata['value']['estimated_count'] = result;
         await tapisIO.updateDocument(metadata.uuid, metadata.name, metadata.value)
             .catch(function(error) {
                 msg = 'tapisIO.updateDocument, error: ' + error;
@@ -459,13 +458,12 @@ queryQueue.process(async (job) => {
                         webhookIO.postToSlack(cmsg);
                     });
             }
-        } */
+        }
 
         // re-trigger the queue
-        //AsyncQueue.triggerQueue();
+        AsyncQueue.triggerQueue();
     }
 
-    //
     } catch (e) {
         msg = 'service error: ' + e;
         msg = config.log.error(context, msg);

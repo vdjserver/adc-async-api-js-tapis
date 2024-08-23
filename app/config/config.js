@@ -45,6 +45,7 @@ function parseBoolean(value)
 config.name = 'VDJ-ADC-ASYNC-API';
 config.async_port = process.env.API_ASYNC_PORT;
 config.lrqdata_path = process.env.LRQDATA_PATH;
+config.lrqdata_local_path = process.env.LRQDATA_LOCAL_PATH;
 config.tapis_version = process.env.TAPIS_VERSION;
 
 // Host user for Corral access
