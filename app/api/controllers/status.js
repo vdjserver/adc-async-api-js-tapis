@@ -33,11 +33,13 @@ module.exports = StatusController;
 var config = require('../../config/config');
 
 // Tapis
-var tapisIO = null;
-if (config.tapis_version == 2) tapisIO = require('vdj-tapis-js');
-if (config.tapis_version == 3) tapisIO = require('vdj-tapis-js/tapisV3');
+var tapisSettings = require('vdj-tapis-js/tapisSettings');
+var tapisIO = tapisSettings.get_default_tapis();
+var ServiceAccount = tapisIO.serviceAccount;
 var GuestAccount = tapisIO.guestAccount;
+var authController = tapisIO.authController;
 var webhookIO = require('vdj-tapis-js/webhookIO');
+var adc_mongo_query = require('vdj-tapis-js/adc_mongo_query');
 
 // service status
 StatusController.getStatus = function(req, res) {

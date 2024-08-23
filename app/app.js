@@ -69,23 +69,16 @@ app.redisConfig = {
 };
 
 // Tapis
-if (config.tapis_version == 2) config.log.info(context, 'Using Tapis V2 API', true);
-else if (config.tapis_version == 3) config.log.info(context, 'Using Tapis V3 API', true);
-else {
-    config.log.error(context, 'Invalid Tapis version, check TAPIS_VERSION environment variable');
-    process.exit(1);
-}
-var tapisV2 = require('vdj-tapis-js/tapis');
-var tapisV3 = require('vdj-tapis-js/tapisV3');
-var tapisIO = null;
-if (config.tapis_version == 2) tapisIO = tapisV2;
-if (config.tapis_version == 3) tapisIO = tapisV3;
-var tapisSettings = tapisIO.tapisSettings;
+var tapisSettings = require('vdj-tapis-js/tapisSettings');
+var tapisIO = tapisSettings.get_default_tapis(config);
 var ServiceAccount = tapisIO.serviceAccount;
 var GuestAccount = tapisIO.guestAccount;
 var authController = tapisIO.authController;
-tapisIO.authController.set_config(config);
 var webhookIO = require('vdj-tapis-js/webhookIO');
+
+// Mongo
+var mongoSettings = require('vdj-tapis-js/mongoSettings');
+mongoSettings.set_config(config);
 
 // Controllers
 var statusController = require('./api/controllers/status');
@@ -123,7 +116,7 @@ ServiceAccount.getToken()
         config.log.info(context, 'Loaded VDJServer Schema version ' + vdj_schema.get_info()['version']);
 
         // Connect schema to vdj-tapis
-        if (tapisIO == tapisV3) tapisV3.init_with_schema(vdj_schema);
+        tapisIO.init_with_schema(vdj_schema);
 
         // Load ADC Async API
         var apiFile = path.resolve(__dirname, 'api/swagger/adc-api-async.yaml');
@@ -146,6 +139,18 @@ ServiceAccount.getToken()
     .then(function(api_schema) {
         //console.log(api_schema);
 
+        // wrap the operations functions to catch syntax errors and such
+        // we do not get a good stack trace with the middleware error handler
+        var try_function = async function (request, response, the_function) {
+            try {
+                await the_function(request, response);
+            } catch (e) {
+                console.error(e);
+                console.error(e.stack);
+                throw e;
+            }
+        };
+
         openapi.initialize({
             apiDoc: api_schema,
             app: app,
@@ -162,21 +167,19 @@ ServiceAccount.getToken()
                 //'application/x-www-form-urlencoded': bodyParser.urlencoded({extended: true})
             },
             securityHandlers: {
-                user_authorization: authController.userAuthorization,
-                admin_authorization: authController.adminAuthorization,
-                project_authorization: authController.projectAuthorization
+                admin_authorization: authController.adminAuthorization
             },
             operations: {
                 // service status and info
-                get_service_status: statusController.getStatus,
-                get_info: statusController.getInfo,
+                get_service_status: async function(req, res) { return try_function(req, res, statusController.getStatus); },
+                get_info: async function(req, res) { return try_function(req, res, statusController.getInfo); },
 
                 // queries
-                get_query_status: asyncController.getQueryStatus,
-                async_repertoire: asyncController.asyncQueryRepertoire,
-                async_rearrangement: asyncController.asyncQueryRearrangement,
-                async_clone: asyncController.asyncQueryClone,
-                async_notify: asyncController.asyncNotify
+                get_query_status: async function(req, res) { return try_function(req, res, asyncController.getQueryStatus); },
+                async_repertoire: async function(req, res) { return try_function(req, res, asyncController.asyncQueryRepertoire); },
+                async_rearrangement: async function(req, res) { return try_function(req, res, asyncController.asyncQueryRearrangement); },
+                async_clone: async function(req, res) { return try_function(req, res, asyncController.asyncQueryClone); },
+                async_notify: async function(req, res) { return try_function(req, res, asyncController.asyncNotify); },
             }
         });
 
@@ -189,14 +192,17 @@ ServiceAccount.getToken()
         });
     })
     .then(function() {
-        if (config.async.enable_poll) {
+        config.log.info(context, 'VDJServer ADC ASYNC API, triggering queue');
+        AsyncQueue.triggerQueue();
+
+/*        if (config.async.enable_poll) {
             config.log.info(context, 'Polling ENABLED for LRQ');
             AsyncQueue.triggerPolling();
         } else config.log.info(context, 'Polling DISABLED for LRQ');
         if (config.async.enable_expire) {
             config.log.info(context, 'Expiration ENABLED for async queries');
             AsyncQueue.triggerExpiration();
-        } else config.log.info(context, 'Expiration DISABLED for async queries');
+        } else config.log.info(context, 'Expiration DISABLED for async queries'); */
     })
     .catch(function(error) {
         var msg = config.log.error(context, 'Service could not be start.\n' + error);

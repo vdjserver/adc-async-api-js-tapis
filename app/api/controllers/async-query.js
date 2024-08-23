@@ -33,6 +33,10 @@ module.exports = AsyncController;
 var app = require('../../app');
 var config = require('../../config/config');
 
+// Schema libraries
+var airr = require('airr-js');
+var vdj_schema = require('vdjserver-schema');
+
 // Node packages
 const zlib = require('zlib');
 const fs = require('fs');
@@ -41,17 +45,13 @@ const fs = require('fs');
 var asyncQueue = require('../queues/async-queue');
 
 // Tapis
-var tapisV2 = require('vdj-tapis-js/tapis');
-var tapisV3 = require('vdj-tapis-js/tapisV3');
-var tapisIO = null;
-if (config.tapis_version == 2) tapisIO = tapisV2;
-if (config.tapis_version == 3) tapisIO = tapisV3;
-var tapisSettings = tapisIO.tapisSettings;
+var tapisSettings = require('vdj-tapis-js/tapisSettings');
+var tapisIO = tapisSettings.get_default_tapis();
 var ServiceAccount = tapisIO.serviceAccount;
 var GuestAccount = tapisIO.guestAccount;
 var authController = tapisIO.authController;
-tapisIO.authController.set_config(config);
 var webhookIO = require('vdj-tapis-js/webhookIO');
+var adc_mongo_query = require('vdj-tapis-js/adc_mongo_query');
 
 // return status of asynchronous query
 AsyncController.getQueryStatus = function(req, res) {
@@ -101,9 +101,15 @@ AsyncController.asyncQueryRepertoire = function(req, res) {
 }
 
 // submit asynchronous query
-AsyncController.asyncQueryRearrangement = function(req, res) {
+AsyncController.asyncQueryRearrangement = async function(req, res) {
     var context = "AsyncController.asyncQueryRearrangement";
+    var msg = null;
+
     config.log.info(context, 'asynchronous query for rearrangements.');
+
+    // 1. process the query for basic validation
+    // 2. create async meta record
+    // 3. submit job to queue
 
     var bodyData = req.body;
     if (bodyData['facets']) {
@@ -111,10 +117,145 @@ AsyncController.asyncQueryRearrangement = function(req, res) {
         return;
     }
 
-    res.status(500).json({"message":"Not implemented."});
+    // check max query size
+    var bodyLength = JSON.stringify(bodyData).length;
+    if (bodyLength > config.info.max_query_size) {
+        msg = "Query size (" + bodyLength + ") exceeds maximum size of " + config.info.max_query_size + " characters.";
+        res.status(400).json({"message":msg});
+        msg = config.log.error(context, msg);
+        webhookIO.postToSlack(msg);
+        return;
+    }
 
-//    req.params.do_async = true;
-//    return rearrangementController.queryRearrangements(req, res);
+    // async queries have a different max
+    // if the query does not specify a size, we need to count to see if the
+    // result set is too big. we indicate this with a null size.
+    var size = null;
+    if (bodyData['size'] != undefined) {
+        size = bodyData['size'];
+        if (size > config.async.max_size) {
+            msg = "Size too large (" + size + "), maximum size is " + config.async.max_size;
+            res.status(400).json({"message":msg});
+            msg = config.log.error(context, msg);
+            webhookIO.postToSlack(msg);
+            return;
+        }
+    }
+
+    // AIRR fields
+    var all_fields = [];
+    var airr_schema = airr.get_schema('Rearrangement')['definition'];
+    if (bodyData['include_fields']) {
+        airr.collectFields(airr_schema, bodyData['include_fields'], all_fields, null);
+    }
+    // collect all AIRR schema fields
+    var schema_fields = [];
+    airr.collectFields(airr_schema, 'airr-schema', schema_fields, null);
+
+    // field projection
+    var projection = {};
+    if (bodyData['fields'] != undefined) {
+        var fields = bodyData['fields'];
+        //if (config.debug) console.log('fields: ', fields);
+        if (! (fields instanceof Array)) {
+            msg = "fields parameter is not an array.";
+            res.status(400).json({"message":msg});
+            return;
+        }
+        for (let i = 0; i < fields.length; ++i) {
+            if (fields[i] == '_id') continue;
+            if (fields[i] == '_etag') continue;
+            projection[fields[i]] = 1;
+        }
+        projection['_id'] = 1;
+
+        // add AIRR required fields to projection
+        // NOTE: projection will not add a field if it is not already in the document
+        // so below after the data has been retrieved, missing fields need to be
+        // added with null values.
+        if (all_fields.length > 0) {
+            for (var r in all_fields) projection[all_fields[r]] = 1;
+        }
+
+        // add to field list so will be put in response if necessary
+        for (let i = 0; i < fields.length; ++i) {
+            if (fields[i] == '_id') continue;
+            all_fields.push(fields[i]);
+        }
+    }
+
+    // format parameter
+    var format = 'json';
+    if (bodyData['format'] != undefined)
+        format = bodyData['format'];
+    if ((format != 'json') && (format != 'tsv')) {
+        msg = "Unsupported format (" + format + ").";
+        res.status(400).json({"message":msg});
+        return;
+    }
+
+    // construct query string
+    var filter = {};
+    var query = undefined;
+    if (bodyData['filters'] != undefined) {
+        filter = bodyData['filters'];
+        try {
+            var error = { message: '' };
+            query = adc_mongo_query.constructQueryOperation(airr, airr_schema, filter, error, false, true);
+            //console.log(query);
+
+            if (!query) {
+                msg = "Could not construct valid query. Error: " + error['message'];
+                res.status(400).json({"message":msg});
+                msg = config.log.error(context, msg);
+                webhookIO.postToSlack(msg);
+                return;
+            }
+        } catch (e) {
+            msg = "Could not construct valid query: " + e;
+            res.status(400).json({"message":msg});
+            msg = config.log.error(context, msg);
+            webhookIO.postToSlack(msg);
+            return;
+        }
+    }
+
+    // eliminate any extra fields from the query
+    // TODO: hard-coded so should we look at schema instead?
+    var trimBody = {};
+    for (let p in bodyData) {
+        switch(p) {
+            case 'filters':
+            case 'format':
+            case 'fields':
+            case 'size':
+            case 'from':
+            case 'include_fields':
+            case 'notification':
+                trimBody[p] = bodyData[p];
+        }
+    }
+
+    // create metadata entry
+    var collection = 'rearrangement' + tapisSettings.mongo_queryCollection;
+    var metadata = await tapisIO.createAsyncQueryMetadata('rearrangement', collection, trimBody)
+        .catch(function(error) {
+            msg = 'tapisIO.createAsyncQueryMetadata, internal service error: ' + error;
+        });
+    if (msg) {
+            res.status(500).json({"message":msg});
+            msg = config.log.error(context, msg);
+            webhookIO.postToSlack(msg);
+            return;
+    }
+
+    config.log.info(context, 'Created async metadata:', metadata.uuid);
+    res.status(200).json({"message":"rearrangement async query accepted.", "query_id": metadata.uuid});
+
+    // trigger the queue
+    asyncQueue.triggerQueue();
+
+    return;
 }
 
 // submit asynchronous query

@@ -38,19 +38,19 @@ const fs = require('fs');
 const fsPromises = require('fs').promises;
 var Queue = require('bull');
 
+// Schema libraries
+var airr = require('airr-js');
+var vdj_schema = require('vdjserver-schema');
+
 // Tapis
-var tapisV2 = require('vdj-tapis-js/tapis');
-var tapisV3 = require('vdj-tapis-js/tapisV3');
-var tapisIO = null;
-if (config.tapis_version == 2) tapisIO = tapisV2;
-if (config.tapis_version == 3) tapisIO = tapisV3;
-var tapisSettings = tapisIO.tapisSettings;
+var tapisSettings = require('vdj-tapis-js/tapisSettings');
+var tapisIO = tapisSettings.get_default_tapis();
 var ServiceAccount = tapisIO.serviceAccount;
 var GuestAccount = tapisIO.guestAccount;
 var authController = tapisIO.authController;
-tapisIO.authController.set_config(config);
 var webhookIO = require('vdj-tapis-js/webhookIO');
-
+var adc_mongo_query = require('vdj-tapis-js/adc_mongo_query');
+var mongoIO = require('vdj-tapis-js/mongoIO');
 
 AsyncQueue.cleanStatus = function(metadata) {
     var entry = {
@@ -74,6 +74,407 @@ AsyncQueue.checkNotification = function(metadata) {
     }
     return notify;
 }
+
+var triggerQueue = new Queue('async trigger', { redis: app.redisConfig });
+var submitQueue = new Queue('async submit', { redis: app.redisConfig });
+var countQueue = new Queue('async count', { redis: app.redisConfig });
+var queryQueue = new Queue('async query', { redis: app.redisConfig });
+var smallQueryQueue = new Queue('async small query', { redis: app.redisConfig });
+var finishQueue = new Queue('async finish', { redis: app.redisConfig });
+
+//
+// While the typical use of Bull queues is to submit a job with specific job data, I'm
+// always concerned that some event, either an error or server wipe or such will cause
+// the job to be lost. Instead I design each queue to query meta records to determine
+// whether something needs to be run, exit if not, otherwise process it. This way a job
+// can be submitted at any time to "check" if work is to be done, and any multiple job
+// submissions don't conflict with each other.
+//
+// We use default concurrency of 1 so this eliminates possibility of multiple jobs
+// processing the same entry.
+//
+
+//
+// Trigger the async queries
+// This is called by app initialization or from an async query request
+//
+AsyncQueue.triggerQueue = function() {
+    var context = 'AsyncQueue.triggerQueue';
+    var msg = null;
+
+    config.log.info(context, 'start');
+
+    // TODO: should there be a global parameter to disable async api queues?
+
+    // trigger the queue
+    // submit one job to run immediately and another once per hour
+    triggerQueue.add({});
+    triggerQueue.add({}, { repeat: { cron: '0 * * * *' } });
+}
+
+triggerQueue.process(async (job) => {
+    try {
+
+    var context = 'AsyncQueue.triggerQueue.process';
+    var msg = null;
+    var triggers, jobs;
+
+    config.log.info(context, 'start');
+
+    triggers = await triggerQueue.getJobs(['active']);
+    config.log.info(context, 'active trigger jobs (' + triggers.length + ')');
+    triggers = await triggerQueue.getJobs(['wait']);
+    config.log.info(context, 'wait trigger jobs (' + triggers.length + ')');
+    triggers = await triggerQueue.getJobs(['delayed']);
+    config.log.info(context, 'delayed trigger jobs (' + triggers.length + ')');
+
+    //console.log(submitQueue);
+    // check if active jobs in queues
+    jobs = await submitQueue.getJobs(['active']);
+    config.log.info(context, 'active jobs (' + jobs.length + ') in ADC ASYNC submit queue');
+    if (jobs.length == 0) {
+        // no active jobs, so submit one
+        submitQueue.add({});
+    }
+
+    // check if active jobs in queues
+    jobs = await countQueue.getJobs(['active']);
+    config.log.info(context, 'active jobs (' + jobs.length + ') in ADC ASYNC count queue');
+    if (jobs.length == 0) {
+        // no active jobs, so submit one
+        countQueue.add({});
+    }
+
+    // check if active jobs in queues
+    jobs = await queryQueue.getJobs(['active']);
+    config.log.info(context, 'active jobs (' + jobs.length + ') in ADC ASYNC count queue');
+    if (jobs.length == 0) {
+        // no active jobs, so submit one
+        queryQueue.add({});
+    }
+
+/*    // check if active jobs in queues
+    jobs = await finishQueue.getJobs(['active']);
+    config.log.info(context, 'active jobs (' + jobs.length + ') in ADC ASYNC count queue');
+    if (jobs.length == 0) {
+        // no active jobs, so submit one
+        finishQueue.add({});
+    }*/
+
+    } catch (e) {
+        msg = 'service error: ' + e;
+        msg = config.log.error(context, msg);
+        webhookIO.postToSlack(msg);
+    }
+
+    config.log.info(context, 'end');
+    return Promise.resolve();
+});
+
+// processing PENDING and SUBMITTED queries
+submitQueue.process(async (job) => {
+    try {
+
+    var context = 'AsyncQueue.submitQueue.process';
+    var msg = null;
+    var triggers, jobs;
+
+    config.log.info(context, 'start');
+
+    // are there any PENDING requests
+    var pending = await tapisIO.getAsyncQueryMetadataWithStatus('PENDING')
+        .catch(function(error) {
+            msg = 'tapisIO.getAsyncQueryMetadataWithStatus, error: ' + error;
+        });
+    if (msg) {
+        msg = config.log.error(context, msg);
+        webhookIO.postToSlack(msg);
+        return Promise.reject();
+    }
+    config.log.info(context, 'number of pending queries: ' + pending.length);
+
+    // update them as submitted
+    if (pending.length > 0) {
+        for (let i in pending) {
+            let obj = pending[i];
+            obj['value']['status'] = 'SUBMITTED';
+            await tapisIO.updateDocument(obj.uuid, obj.name, obj.value)
+                .catch(function(error) {
+                    msg = 'tapisIO.updateDocument, error: ' + error;
+                });
+            if (msg) {
+                msg = config.log.error(context, msg);
+                webhookIO.postToSlack(msg);
+                return Promise.reject();
+            }
+        }
+    }
+
+    // are there any SUBMITTED requests sorted by creation date, FIFO
+    var submit = await tapisIO.getAsyncQueryMetadataWithStatus('SUBMITTED', true)
+        .catch(function(error) {
+            msg = 'tapisIO.getAsyncQueryMetadataWithStatus, error: ' + error;
+        });
+    if (msg) {
+        msg = config.log.error(context, msg);
+        webhookIO.postToSlack(msg);
+        return Promise.reject();
+    }
+    config.log.info(context, 'number of submitted queries: ' + submit.length);
+
+    if (submit.length > 0) {
+        // take the first one
+        let obj = submit[0];
+
+        // determine if we need to perform a count before doing the query
+        let body = obj['value']['body'];
+        let size = null;
+        if (body['size']) size = body['size'];
+
+        if (size == null) {
+            // we do not know size, so mark entry as COUNTING
+            obj['value']['status'] = 'COUNTING';
+            await tapisIO.updateDocument(obj.uuid, obj.name, obj.value)
+                .catch(function(error) {
+                    msg = 'tapisIO.updateDocument, error: ' + error;
+                });
+            if (msg) {
+                msg = config.log.error(context, msg);
+                webhookIO.postToSlack(msg);
+                return Promise.reject();
+            }
+
+            // and submit count job
+            config.log.info(context, 'submitting count job for query: ' + obj['uuid']);
+            countQueue.add({});
+        } else {
+            // otherwise size is acceptable so mark entry as PROCESSING
+            obj['value']['status'] = 'PROCESSING';
+            await tapisIO.updateDocument(obj.uuid, obj.name, obj.value)
+                .catch(function(error) {
+                    msg = 'tapisIO.updateDocument, error: ' + error;
+                });
+            if (msg) {
+                msg = config.log.error(context, msg);
+                webhookIO.postToSlack(msg);
+                return Promise.reject();
+            }
+
+            // and submit job
+            config.log.info(context, 'submitting query job for query: ' + obj['uuid']);
+            queryQueue.add({});
+        }
+    }
+
+    } catch (e) {
+        msg = 'service error: ' + e;
+        msg = config.log.error(context, msg);
+        webhookIO.postToSlack(msg);
+    }
+
+    config.log.info(context, 'end');
+    return Promise.resolve();
+});
+
+
+// COUNTING queries
+countQueue.process(async (job) => {
+    try {
+
+    var context = 'AsyncQueue.countQueue.process';
+    var msg = null;
+    var triggers, jobs;
+
+    config.log.info(context, 'start');
+
+    // are there any COUNTING requests
+    var records = await tapisIO.getAsyncQueryMetadataWithStatus('COUNTING', true)
+        .catch(function(error) {
+            msg = 'tapisIO.getAsyncQueryMetadataWithStatus, error: ' + error;
+        });
+    if (msg) {
+        msg = config.log.error(context, msg);
+        webhookIO.postToSlack(msg);
+        return Promise.reject();
+    }
+    config.log.info(context, 'number of COUNTING queries: ' + records.length);
+
+    if (records.length != 0) {
+        // take the first one
+        let obj = records[0];
+        let body = obj['value']['body'];
+
+        // the query should have already been constructed upon submission request so we don't expect any errors at this point.
+        // TODO: if async API every used for more than rearrangements, this needs to be parameterized
+        let airr_schema = airr.get_schema('Rearrangement')['definition'];
+        let error = { message: '' };
+        let query = adc_mongo_query.constructQueryOperation(airr, airr_schema, body['filters'], error, false, true);
+        let parsed_query = JSON.parse(query);
+        let from = null;
+        if (body['from'] != null) from = body['from'];
+
+        // setup count aggregation query
+        let count_query = [{"$match":parsed_query}];
+        if (from) count_query.push({"$skip":from});
+        count_query.push({"$count":"total_records"});
+        console.log(count_query);
+
+        // perform the count aggregation
+        let result = await mongoIO.performAggregation(obj['value']['collection'], count_query)
+            .catch(function(error) {
+                msg = 'mongoIO.performAggregation, error: ' + error;
+            });
+        if (msg) {
+            msg = config.log.error(context, msg);
+            webhookIO.postToSlack(msg);
+            return Promise.reject();
+        }
+        console.log(result);
+
+        // save result and update status
+        if (!result || result.length == 0) {
+            // no records match
+            obj['value']['status'] = 'ERROR';
+            obj['value']['message'] = 'query matches 0 records';
+            obj['value']['estimated_count'] = 0;
+            await tapisIO.updateDocument(obj.uuid, obj.name, obj.value)
+                .catch(function(error) {
+                    msg = 'tapisIO.updateDocument, error: ' + error;
+                });
+            if (msg) {
+                msg = config.log.error(context, msg);
+                webhookIO.postToSlack(msg);
+                return Promise.reject();
+            }
+        } else {
+            obj['value']['status'] = 'PROCESSING';
+            obj['value']['estimated_count'] = result[0]['total_records'];
+            await tapisIO.updateDocument(obj.uuid, obj.name, obj.value)
+                .catch(function(error) {
+                    msg = 'tapisIO.updateDocument, error: ' + error;
+                });
+            if (msg) {
+                msg = config.log.error(context, msg);
+                webhookIO.postToSlack(msg);
+                return Promise.reject();
+            }
+        }
+ 
+        // re-trigger the queue
+        AsyncQueue.triggerQueue();
+    }
+
+    } catch (e) {
+        msg = 'service error: ' + e;
+        msg = config.log.error(context, msg);
+        webhookIO.postToSlack(msg);
+    }
+
+    config.log.info(context, 'end');
+    return Promise.resolve();
+});
+
+// PROCESSING queries
+queryQueue.process(async (job) => {
+    try {
+
+    var context = 'AsyncQueue.queryQueue.process';
+    var msg = null;
+    var triggers, jobs;
+
+    config.log.info(context, 'start');
+
+    // are there any PROCESSING requests
+    var records = await tapisIO.getAsyncQueryMetadataWithStatus('PROCESSING')
+        .catch(function(error) {
+            msg = 'tapisIO.getAsyncQueryMetadataWithStatus, error: ' + error;
+        });
+    if (msg) {
+        msg = config.log.error(context, msg);
+        webhookIO.postToSlack(msg);
+        return Promise.reject();
+    }
+    config.log.info(context, 'number of PROCESSING queries: ' + records.length);
+
+    if (records.length != 0) {
+        // take the first one
+        let metadata = records[0];
+        let body = metadata['value']['body'];
+
+        var outname = null;
+        if (body['format'] == 'tsv')
+            outname = metadata["uuid"] + '.airr.tsv';
+        else
+            outname = metadata["uuid"] + '.airr.tsv';
+        var filename = config.lrqdata_path + outname;
+
+        // perform query
+        await mongoIO.performAsyncQueryToFile(metadata, filename)
+            .catch(function(error) {
+                msg = 'mongoIO.performAsyncQueryToFile, error: ' + error;
+            });
+        if (msg) {
+            msg = config.log.error(context, msg);
+            webhookIO.postToSlack(msg);
+            return Promise.reject();
+        }
+
+        // generate postit
+        let fileobj = { path: filename, allowedUses: 2000000000, validSeconds: 2000000000 };
+        var postit = await tapisIO.createAsyncQueryPostit(fileobj)
+            .catch(function(error) {
+                msg = 'tapisIO.createAsyncQueryPostit, error: ' + error;
+            });
+        if (msg) {
+            msg = config.log.error(context, msg);
+            webhookIO.postToSlack(msg);
+            return Promise.reject();
+        }
+        console.log(postit);
+
+        // update metadata
+/*        metadata['value']['status'] = 'FINISHED';
+        metadata['value']['postid_id'] = postit['uuid'];
+        metadata['value']['final_file'] = postit['outname'];
+        metadata['value']['download_url'] = postit['outname'];
+        metadata['value']['estimated_count'] = result[0]['total_records'];
+        await tapisIO.updateDocument(metadata.uuid, metadata.name, metadata.value)
+            .catch(function(error) {
+                msg = 'tapisIO.updateDocument, error: ' + error;
+            });
+        if (msg) {
+            msg = config.log.error(context, msg);
+            webhookIO.postToSlack(msg);
+            return Promise.reject();
+        }
+
+        // send notification
+        if (metadata["value"]["notification"]) {
+            let notify = AsyncQueue.checkNotification(metadata);
+            if (notify) {
+                let data = AsyncQueue.cleanStatus(metadata);
+                await tapisIO.sendNotification(notify, data)
+                    .catch(function(error) {
+                        let cmsg = config.log.error(context, 'Could not post notification.\n' + error);
+                        webhookIO.postToSlack(cmsg);
+                    });
+            }
+        } */
+
+        // re-trigger the queue
+        //AsyncQueue.triggerQueue();
+    }
+
+    //
+    } catch (e) {
+        msg = 'service error: ' + e;
+        msg = config.log.error(context, msg);
+        webhookIO.postToSlack(msg);
+    }
+
+    config.log.info(context, 'end');
+    return Promise.resolve();
+});
 
 /*
 // Steps for a long-running query

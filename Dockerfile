@@ -1,7 +1,7 @@
 # Base Image
 FROM ubuntu:22.04
 
-MAINTAINER VDJServer <vdjserver@utsouthwestern.edu>
+LABEL maintainer="VDJServer <vdjserver@utsouthwestern.edu>"
 
 # Install OS Dependencies
 RUN export DEBIAN_FRONTEND=noninteractive && apt-get update && apt-get install -y --fix-missing \
@@ -16,7 +16,7 @@ RUN export DEBIAN_FRONTEND=noninteractive && apt-get update && apt-get install -
 ##################
 
 # node
-ENV NODE_VER v18.17.1
+ENV NODE_VER=v18.17.1
 RUN wget https://nodejs.org/dist/$NODE_VER/node-$NODE_VER-linux-x64.tar.xz
 RUN tar xf node-$NODE_VER-linux-x64.tar.xz
 RUN cp -rf /node-$NODE_VER-linux-x64/bin/* /usr/bin
