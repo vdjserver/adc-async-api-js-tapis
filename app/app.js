@@ -107,26 +107,26 @@ ServiceAccount.getToken()
         return airr.load_schema();
     })
     .then(function(schema) {
-        config.log.info(context, 'Loaded AIRR Schema version ' + airr.get_info()['version']);
+        config.log.info(context, 'Loaded AIRR Schema version ' + airr.get_info()['version'], true);
 
         // wait for the VDJServer schema to be loaded
         return vdj_schema.load_schema();
     })
     .then(function(schema) {
-        config.log.info(context, 'Loaded VDJServer Schema version ' + vdj_schema.get_info()['version']);
+        config.log.info(context, 'Loaded VDJServer Schema version ' + vdj_schema.get_info()['version'], true);
 
         // Connect schema to vdj-tapis
         tapisIO.init_with_schema(vdj_schema);
 
         // Load ADC Async API
         var apiFile = path.resolve(__dirname, 'api/swagger/adc-api-async.yaml');
-        config.log.info(context, 'Using ADC API Async specification: ' + apiFile);
+        config.log.info(context, 'Using ADC API Async specification: ' + apiFile, true);
         var api_spec = yaml.safeLoad(fs.readFileSync(apiFile, 'utf8'));
-        config.log.info(context, 'Loaded ADC API Async version: ' + api_spec.info.version);
+        config.log.info(context, 'Loaded ADC API Async version: ' + api_spec.info.version, true);
 
         // Load internal admin API
         var notifyFile = path.resolve(__dirname, 'api/swagger/async-admin.yaml');
-        config.log.info(context, 'notify API specification: ' + notifyFile);
+        config.log.info(context, 'async admin API specification: ' + notifyFile, true);
         var notify_spec = yaml.safeLoad(fs.readFileSync(notifyFile, 'utf8'));
         // copy paths
         for (var p in notify_spec['paths']) {
@@ -186,13 +186,13 @@ ServiceAccount.getToken()
         // Start listening on port
         return new Promise(function(resolve, reject) {
             app.listen(app.get('port'), function() {
-                config.log.info(context, 'VDJServer ADC ASYNC API service listening on port ' + app.get('port'));
+                config.log.info(context, 'VDJServer ADC ASYNC API service listening on port ' + app.get('port'), true);
                 resolve();
             });
         });
     })
     .then(function() {
-        config.log.info(context, 'VDJServer ADC ASYNC API, triggering queue');
+        config.log.info(context, 'VDJServer ADC ASYNC API, triggering queue', true);
         AsyncQueue.triggerQueue();
 
 /*        if (config.async.enable_poll) {
