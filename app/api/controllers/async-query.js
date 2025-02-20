@@ -200,11 +200,13 @@ AsyncController.asyncQueryRearrangement = async function(req, res) {
     if (bodyData['filters'] != undefined) {
         filter = bodyData['filters'];
         try {
+            // we check for query support as this is rearrangements
             var error = { message: '' };
-            query = adc_mongo_query.constructQueryOperation(airr, airr_schema, filter, error, false, true);
+            query = adc_mongo_query.constructQueryOperation(airr, airr_schema, filter, error, true, true);
             //console.log(query);
 
             if (!query) {
+                config.log.info(context, "error constructing query: " + query);
                 msg = "Could not construct valid query. Error: " + error['message'];
                 res.status(400).json({"message":msg});
                 msg = config.log.error(context, msg);
@@ -222,6 +224,7 @@ AsyncController.asyncQueryRearrangement = async function(req, res) {
 
     // eliminate any extra fields from the query
     // TODO: hard-coded so should we look at schema instead?
+    // TODO: output info about any extras
     var trimBody = {};
     for (let p in bodyData) {
         switch(p) {
