@@ -303,6 +303,7 @@ countQueue.process(async (job) => {
         // take the first one
         let obj = records[0];
         let body = obj['value']['body'];
+        config.log.info(context, 'perform count aggregation for query: ' + obj['uuid']);
 
         // the query should have already been constructed upon submission request so we don't expect any errors at this point.
         // TODO: if async API every used for more than rearrangements, this needs to be parameterized
@@ -335,8 +336,10 @@ countQueue.process(async (job) => {
         if (!result || result.length == 0) {
             // no records match
             obj['value']['status'] = 'ERROR';
-            obj['value']['message'] = 'query matches 0 records';
+            if (msg) obj['value']['message'] = msg;
+            else obj['value']['message'] = 'query matches 0 records';
             obj['value']['estimated_count'] = 0;
+            config.log.info(context, 'count aggregation error for query: ' + obj['uuid']);
             await tapisIO.updateDocument(obj.uuid, obj.name, obj.value)
                 .catch(function(error) {
                     msg = 'tapisIO.updateDocument, error: ' + error;
