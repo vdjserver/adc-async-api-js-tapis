@@ -326,9 +326,21 @@ countQueue.process(async (job) => {
                 msg = 'mongoIO.performAggregation, error: ' + error;
             });
         if (msg) {
+            // counting error
             msg = config.log.error(context, msg);
             webhookIO.postToSlack(msg);
-            return Promise.reject();
+            obj['value']['status'] = 'ERROR';
+            obj['value']['message'] = msg;
+            msg = null;
+            await tapisIO.updateDocument(obj.uuid, obj.name, obj.value)
+                .catch(function(error) {
+                    msg = 'tapisIO.updateDocument, error: ' + error;
+                });
+            if (msg) {
+                msg = config.log.error(context, msg);
+                webhookIO.postToSlack(msg);
+            }
+            return Promise.resolve();
         }
         console.log(result);
 
