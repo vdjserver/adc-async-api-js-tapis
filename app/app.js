@@ -88,11 +88,15 @@ var asyncController = require('./api/controllers/async-query');
 // This is also so that the /vdjZ Corral file volume can be accessed,
 // as it is restricted to the TACC vdj account.
 // read/write access is required.
-config.log.info(context, 'Downgrading to host user: ' + config.hostServiceAccount, true);
-process.setgid(config.hostServiceGroup);
-process.setuid(config.hostServiceAccount);
-config.log.info(context, 'Current uid: ' + process.getuid(), true);
-config.log.info(context, 'Current gid: ' + process.getgid(), true);
+if (config.hostServiceAccount) {
+    config.log.info(context, 'Downgrading to host user: ' + config.hostServiceAccount);
+    process.setgid(config.hostServiceGroup);
+    process.setuid(config.hostServiceAccount);
+    config.log.info(context, 'Current uid: ' + process.getuid());
+    config.log.info(context, 'Current gid: ' + process.getgid());
+} else {
+    config.log.info('WARNING', 'config.hostServiceAccount is not defined, Corral access will generate errors.');
+}
 
 // Verify we can login with guest account
 ServiceAccount.getToken()
