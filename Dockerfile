@@ -1,7 +1,7 @@
 # Base Image
 FROM ubuntu:22.04
 
-LABEL maintainer="VDJServer <vdjserver@utsouthwestern.edu>"
+LABEL MAINTAINER="VDJServer <vdjserver@utsouthwestern.edu>"
 
 # Install OS Dependencies
 RUN export DEBIAN_FRONTEND=noninteractive && apt-get update && apt-get install -y --fix-missing \
