@@ -72,6 +72,9 @@ AsyncQueue.checkNotification = function(metadata) {
         if (notify["events"].indexOf(metadata["value"]["status"]) < 0)
             notify = null;
     }
+    if (! notify['url']) {
+        notify = null;
+    }
     return notify;
 }
 
