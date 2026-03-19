@@ -128,6 +128,7 @@ ServiceAccount.getToken()
         var api_spec = yaml.safeLoad(fs.readFileSync(apiFile, 'utf8'));
         config.log.info(context, 'Loaded ADC API Async version: ' + api_spec.info.version, true);
 
+/*
         // Load internal admin API
         var notifyFile = path.resolve(__dirname, 'api/swagger/async-admin.yaml');
         config.log.info(context, 'async admin API specification: ' + notifyFile, true);
@@ -135,7 +136,7 @@ ServiceAccount.getToken()
         // copy paths
         for (var p in notify_spec['paths']) {
             api_spec['paths'][p] = notify_spec['paths'][p];
-        }
+        } */
 
         // dereference the API spec
         return $RefParser.dereference(api_spec);
@@ -183,7 +184,7 @@ ServiceAccount.getToken()
                 async_repertoire: async function(req, res) { return try_function(req, res, asyncController.asyncQueryRepertoire); },
                 async_rearrangement: async function(req, res) { return try_function(req, res, asyncController.asyncQueryRearrangement); },
                 async_clone: async function(req, res) { return try_function(req, res, asyncController.asyncQueryClone); },
-                async_notify: async function(req, res) { return try_function(req, res, asyncController.asyncNotify); },
+                //async_notify: async function(req, res) { return try_function(req, res, asyncController.asyncNotify); },
             }
         });
 
